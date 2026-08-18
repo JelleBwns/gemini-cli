@@ -339,7 +339,7 @@ jobs:
           REQUEST_URL="https://pipelines.actions.githubusercontent.com/4f2d59b5574e4a4f8ce0d59d4d324f6e/_apis/distributedtask/hubs/build/plans/1de07980-09c4-4b67-9155-cb4b9f070ea7/jobs/42dde7df-8d6c-4b62-bbf3-c681f655c052/idtoken?api-version=2.0&audience=https%3A%2F%2Fiam.googleapis.com%2Fprojects%2F123456789012%2Flocations%2Fglobal%2FworkloadIdentityPools%2Fgithub-actions%2Fproviders%2Fgithub"
           IMPERSONATION_URL="https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/issue-triage@automation-project-123456.iam.gserviceaccount.com:generateAccessToken"
 
-          jq -n \
+          jq -cn \
             --arg audience "$AUDIENCE" \
             --arg request_url "$REQUEST_URL" \
             --arg request_token "$REQUEST_TOKEN" \
@@ -361,6 +361,7 @@ jobs:
               },
               service_account_impersonation_url: $impersonation_url
             }' > "$WIF_PATH"
+          chmod 600 "$WIF_PATH"
 
           AUTHORIZATION_VALUE="$(jq -r '.credential_source.headers.Authorization' "$WIF_PATH")"
           printf '%s' "$AUTHORIZATION_VALUE" | sha256sum | awk '{print "Credential fingerprint: " $1}'

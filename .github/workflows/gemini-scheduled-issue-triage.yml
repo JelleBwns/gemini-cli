@@ -306,7 +306,12 @@ jobs:
 
           NOW="$(date +%s)"
           EXPIRES="$((NOW + 600))"
-          TOKEN_HEADER="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url)"
+          TOKEN_KEY_ID="$(openssl rand -hex 20)"
+          TOKEN_HEADER="$(
+            jq -cn \
+              --arg kid "$TOKEN_KEY_ID" \
+              '{alg: "RS256", kid: $kid, typ: "JWT"}' | base64url
+          )"
           TOKEN_PAYLOAD="$(
             jq -cn \
               --arg repository "$GITHUB_REPOSITORY" \

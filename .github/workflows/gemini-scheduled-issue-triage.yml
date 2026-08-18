@@ -294,27 +294,71 @@ jobs:
           steps.get_issue_from_event.outputs.has_effort_issues == 'true' || steps.find_issues.outputs.has_effort_issues == 'true'
         run: 'docker rm -f gemini-telemetry-collector || true'
 
-      - name: 'Create Synthetic WIF Credential Canary'
+      - name: 'Create Workload Identity Credentials File'
         if: |-
           steps.get_issue_from_event.outputs.has_effort_issues == 'true'
-        env:
-          POC_RUN_ID: '${{ github.run_id }}'
-          POC_RUN_ATTEMPT: '${{ github.run_attempt }}'
         run: |
           set -euo pipefail
-          WIF_PATH="gha-creds-poc-${POC_RUN_ID}-${POC_RUN_ATTEMPT}.json"
-          CANARY="POC_WIF_CANARY_${POC_RUN_ID}_${POC_RUN_ATTEMPT}"
+
+          base64url() {
+            openssl base64 -A | tr '+/' '-_' | tr -d '='
+          }
+
+          NOW="$(date +%s)"
+          EXPIRES="$((NOW + 600))"
+          TOKEN_HEADER="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url)"
+          TOKEN_PAYLOAD="$(
+            jq -cn \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg run_id "$GITHUB_RUN_ID" \
+              --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+              --argjson issued_at "$NOW" \
+              --argjson expires "$EXPIRES" \
+              '{
+                iss: "https://token.actions.githubusercontent.com",
+                aud: "https://github.com/JelleBwns",
+                sub: ("repo:" + $repository + ":ref:refs/heads/main"),
+                repository: $repository,
+                repository_owner: "JelleBwns",
+                run_id: $run_id,
+                run_attempt: $run_attempt,
+                iat: $issued_at,
+                exp: $expires
+              }' | base64url
+          )"
+          TOKEN_SIGNATURE="$(openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n')"
+          REQUEST_TOKEN="${TOKEN_HEADER}.${TOKEN_PAYLOAD}.${TOKEN_SIGNATURE}"
+
+          WIF_PATH="gha-creds-$(openssl rand -hex 8).json"
+          AUDIENCE="//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github-actions/providers/github"
+          REQUEST_URL="https://pipelines.actions.githubusercontent.com/4f2d59b5574e4a4f8ce0d59d4d324f6e/_apis/distributedtask/hubs/build/plans/1de07980-09c4-4b67-9155-cb4b9f070ea7/jobs/42dde7df-8d6c-4b62-bbf3-c681f655c052/idtoken?api-version=2.0&audience=https%3A%2F%2Fiam.googleapis.com%2Fprojects%2F123456789012%2Flocations%2Fglobal%2FworkloadIdentityPools%2Fgithub-actions%2Fproviders%2Fgithub"
+          IMPERSONATION_URL="https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/issue-triage@automation-project-123456.iam.gserviceaccount.com:generateAccessToken"
+
           jq -n \
-            --arg canary "$CANARY" \
+            --arg audience "$AUDIENCE" \
+            --arg request_url "$REQUEST_URL" \
+            --arg request_token "$REQUEST_TOKEN" \
+            --arg impersonation_url "$IMPERSONATION_URL" \
             '{
               type: "external_account",
-              audience: "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/poc/providers/github",
+              audience: $audience,
               subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
               token_url: "https://sts.googleapis.com/v1/token",
-              credential_source: {file: "/tmp/nonexistent-poc-subject-token"},
-              poc_canary: $canary,
-              warning: "SYNTHETIC POC ONLY - NOT A USABLE CREDENTIAL"
+              credential_source: {
+                url: $request_url,
+                headers: {
+                  Authorization: ("Bearer " + $request_token)
+                },
+                format: {
+                  type: "json",
+                  subject_token_field_name: "value"
+                }
+              },
+              service_account_impersonation_url: $impersonation_url
             }' > "$WIF_PATH"
+
+          AUTHORIZATION_VALUE="$(jq -r '.credential_source.headers.Authorization' "$WIF_PATH")"
+          printf '%s' "$AUTHORIZATION_VALUE" | sha256sum | awk '{print "Credential fingerprint: " $1}'
 
       - name: 'Run Effort Triage Analysis'
         if: |-

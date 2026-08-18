@@ -6,6 +6,8 @@ on:
   workflow_dispatch:
   issues:
     types: ['opened']
+  issue_comment:
+    types: ['created']
 
 concurrency:
   group: '${{ github.workflow }}-${{ github.event.number || github.run_id }}'
@@ -51,13 +53,19 @@ jobs:
 
       - name: 'Get issue from event'
         if: |-
-          ${{ github.event_name == 'issues' }}
+          ${{ github.event_name == 'issues' || github.event_name == 'issue_comment' }}
         id: 'get_issue_from_event'
         env:
+          EVENT_NAME: '${{ github.event_name }}'
           ISSUE_EVENT: '${{ toJSON(github.event.issue) }}'
+          ISSUE_COMMENT: '${{ github.event.comment.body }}'
         run: |
           set -euo pipefail
-          echo "$ISSUE_EVENT" | jq -c '[{number: .number, title: .title, body: .body, labels: (.labels // [])}]' > issues_to_triage.json
+          if [[ "$EVENT_NAME" == 'issue_comment' ]]; then
+            echo "$ISSUE_EVENT" | jq -c --arg body "$ISSUE_COMMENT" '[{number: .number, title: .title, body: $body, labels: (.labels // [])}]' > issues_to_triage.json
+          else
+            echo "$ISSUE_EVENT" | jq -c '[{number: .number, title: .title, body: .body, labels: (.labels // [])}]' > issues_to_triage.json
+          fi
           cp issues_to_triage.json standard_issues_to_triage.json
           cp issues_to_triage.json effort_issues_to_triage.json
           echo "has_issues=true" >> "${GITHUB_OUTPUT}"

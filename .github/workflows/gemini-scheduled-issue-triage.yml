@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: '0 * * * *' # Runs every hour
   workflow_dispatch:
+  issues:
+    types: ['opened']
 
 concurrency:
   group: '${{ github.workflow }}-${{ github.event.number || github.run_id }}'
@@ -21,7 +23,7 @@ jobs:
   triage-issues:
     timeout-minutes: 60
     if: |-
-      ${{ github.repository == 'google-gemini/gemini-cli' }}
+      ${{ github.repository == 'JelleBwns/gemini-cli' }}
     runs-on: 'ubuntu-latest'
     steps:
       - name: 'Checkout'
@@ -41,13 +43,11 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "🚀 Current CLI Version: ${VERSION}"
 
-      - name: 'Generate GitHub App Token'
+      - name: 'Use Repository GitHub Token'
         id: 'generate_token'
-        uses: 'actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b' # ratchet:actions/create-github-app-token@v2
-        with:
-          app-id: '${{ secrets.APP_ID }}'
-          private-key: '${{ secrets.PRIVATE_KEY }}'
-          permission-issues: 'write'
+        env:
+          REPOSITORY_TOKEN: '${{ github.token }}'
+        run: 'echo "token=${REPOSITORY_TOKEN}" >> "${GITHUB_OUTPUT}"'
 
       - name: 'Get issue from event'
         if: |-
@@ -57,8 +57,11 @@ jobs:
           ISSUE_EVENT: '${{ toJSON(github.event.issue) }}'
         run: |
           set -euo pipefail
-          echo "$ISSUE_EVENT" | jq -c '[{number: .number, title: .title, body: .body}]' > issues_to_triage.json
+          echo "$ISSUE_EVENT" | jq -c '[{number: .number, title: .title, body: .body, labels: (.labels // [])}]' > issues_to_triage.json
+          cp issues_to_triage.json standard_issues_to_triage.json
+          cp issues_to_triage.json effort_issues_to_triage.json
           echo "has_issues=true" >> "${GITHUB_OUTPUT}"
+          echo "has_effort_issues=true" >> "${GITHUB_OUTPUT}"
           echo "✅ Found issue #${{ github.event.issue.number }} from event to triage! 🎯"
 
       - name: 'Sync Issue Types'
@@ -288,12 +291,34 @@ jobs:
 
       - name: 'Stop Telemetry Collector'
         if: |-
-          steps.find_issues.outputs.has_effort_issues == 'true'
+          steps.get_issue_from_event.outputs.has_effort_issues == 'true' || steps.find_issues.outputs.has_effort_issues == 'true'
         run: 'docker rm -f gemini-telemetry-collector || true'
+
+      - name: 'Create Synthetic WIF Credential Canary'
+        if: |-
+          steps.get_issue_from_event.outputs.has_effort_issues == 'true'
+        env:
+          POC_RUN_ID: '${{ github.run_id }}'
+          POC_RUN_ATTEMPT: '${{ github.run_attempt }}'
+        run: |
+          set -euo pipefail
+          WIF_PATH="gha-creds-poc-${POC_RUN_ID}-${POC_RUN_ATTEMPT}.json"
+          CANARY="POC_WIF_CANARY_${POC_RUN_ID}_${POC_RUN_ATTEMPT}"
+          jq -n \
+            --arg canary "$CANARY" \
+            '{
+              type: "external_account",
+              audience: "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/poc/providers/github",
+              subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+              token_url: "https://sts.googleapis.com/v1/token",
+              credential_source: {file: "/tmp/nonexistent-poc-subject-token"},
+              poc_canary: $canary,
+              warning: "SYNTHETIC POC ONLY - NOT A USABLE CREDENTIAL"
+            }' > "$WIF_PATH"
 
       - name: 'Run Effort Triage Analysis'
         if: |-
-          steps.find_issues.outputs.has_effort_issues == 'true'
+          steps.get_issue_from_event.outputs.has_effort_issues == 'true' || steps.find_issues.outputs.has_effort_issues == 'true'
         uses: 'google-github-actions/run-gemini-cli@a3bf79042542528e91937b3a3a6fbc4967ee3c31' # ratchet:google-github-actions/run-gemini-cli@v0
         id: 'gemini_effort_issue_analysis'
         env:
